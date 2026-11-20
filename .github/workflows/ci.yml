@@ -1,0 +1,36 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+  action:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Screen the sample payments (expected to fail)
+        id: bvs
+        continue-on-error: true
+        uses: ./
+        with:
+          files: examples/sample-payments.csv
+          funds: federal-grant
+      - name: The sample must fail with three covered lines
+        shell: bash
+        env:
+          VERDICT: ${{ steps.bvs.outputs.verdict }}
+          ROWS: ${{ steps.bvs.outputs.failing-rows }}
+        run: |
+          echo "verdict=$VERDICT rows=$ROWS"
+          test "$VERDICT" = "fail"
+          test "$ROWS" = "3"

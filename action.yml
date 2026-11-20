@@ -1,0 +1,99 @@
+name: banned-vendor-screen
+description: Fail the build when payment lines, subawards or award text reach a vendor on a US banned-vendor list (1260H, 889, FCC Covered, UFLPA, BIOSECURE), owners and products included.
+author: Tensorust LLC
+branding:
+  icon: shield
+  color: red
+inputs:
+  files:
+    description: Space-separated CSV, JSON or JSON Lines files to screen.
+    required: true
+  preset:
+    description: "Column layout: auto, usaspending-subawards, usaspending-transactions or nih-reporter."
+    default: auto
+  funds:
+    description: "Whose money paid: federal-grant, federal-contract, dod, agency, non-federal or unknown."
+    default: unknown
+  fail-on:
+    description: "Lowest level that fails: confirmed, likely, review or never."
+    default: likely
+  args:
+    description: Extra command-line arguments (for example --vendor payee --text memo --since 2025-12-22).
+    default: ""
+  lists-release:
+    description: us-restricted-parties release tag to screen against, or "latest".
+    default: latest
+  version:
+    description: banned-vendor-screen version to install.
+    default: "0.1.0"
+outputs:
+  verdict:
+    description: pass or fail
+    value: ${{ steps.screen.outputs.verdict }}
+  failing-rows:
+    description: Lines at or above the fail-on level.
+    value: ${{ steps.screen.outputs.failing-rows }}
+  failing-usd:
+    description: Dollars on those lines.
+    value: ${{ steps.screen.outputs.failing-usd }}
+  report:
+    description: Path of the JSON report.
+    value: ${{ steps.screen.outputs.report }}
+runs:
+  using: composite
+  steps:
+    - name: Fetch the lists
+      shell: bash
+      env:
+        LISTS_RELEASE: ${{ inputs.lists-release }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/bvs-lists"
+        mkdir -p "$dir"
+        if [ "$LISTS_RELEASE" = "latest" ]; then
+          base="https://github.com/Mattbusel/us-restricted-parties/releases/latest/download"
+        else
+          base="https://github.com/Mattbusel/us-restricted-parties/releases/download/$LISTS_RELEASE"
+        fi
+        for f in all.jsonl affiliates.senzing.jsonl manifest.json; do
+          curl -fsSL --retry 3 -o "$dir/$f" "$base/$f"
+        done
+        echo "BVS_LISTS=$dir" >> "$GITHUB_ENV"
+    - name: Install banned-vendor-screen
+      shell: bash
+      env:
+        BVS_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS-$RUNNER_ARCH" in
+          Linux-X64) target=x86_64-unknown-linux-gnu ;;
+          macOS-ARM64) target=aarch64-apple-darwin ;;
+          Windows-X64) target=x86_64-pc-windows-msvc ;;
+          *) target="" ;;
+        esac
+        bin="$RUNNER_TEMP/bvs-bin"
+        mkdir -p "$bin"
+        url="https://github.com/Mattbusel/banned-vendor-screen/releases/download/v$BVS_VERSION/banned-vendor-screen-$target.tar.gz"
+        if [ -n "$target" ] && curl -fsSL --retry 3 -o "$RUNNER_TEMP/bvs.tgz" "$url"; then
+          tar -xzf "$RUNNER_TEMP/bvs.tgz" -C "$bin"
+        else
+          cargo install --locked banned-vendor-screen --version "$BVS_VERSION" --root "$RUNNER_TEMP/bvs-cargo"
+          cp "$RUNNER_TEMP"/bvs-cargo/bin/banned-vendor-screen* "$bin/"
+        fi
+        echo "$bin" >> "$GITHUB_PATH"
+    - name: Screen
+      id: screen
+      shell: bash
+      env:
+        BVS_FILES: ${{ inputs.files }}
+        BVS_PRESET: ${{ inputs.preset }}
+        BVS_FUNDS: ${{ inputs.funds }}
+        BVS_FAIL_ON: ${{ inputs.fail-on }}
+        BVS_ARGS: ${{ inputs.args }}
+      run: |
+        set -o pipefail
+        read -r -a files <<< "$BVS_FILES"
+        read -r -a extra <<< "$BVS_ARGS"
+        banned-vendor-screen --lists "$BVS_LISTS" --preset "$BVS_PRESET" --funds "$BVS_FUNDS" \
+          --fail-on "$BVS_FAIL_ON" --json "$RUNNER_TEMP/banned-vendor-screen.json" --quiet \
+          "${extra[@]}" "${files[@]}"
